@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Send, Bot, User, Loader2, Sparkles, Trash2 } from 'lucide-react';
+import { X, Send, Bot, User, Loader2, Sparkles, Trash2, AlertCircle } from 'lucide-react';
 import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
 import { ABOUT_ME, PROJECTS, SKILLS } from '../constants';
 
@@ -20,8 +20,10 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [chatSession, setChatSession] = useState<Chat | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // إعداد سياق الموقع للذكاء الاصطناعي
   const generateSystemInstruction = () => {
@@ -65,18 +67,29 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
 
   // Initialize Chat Session
   useEffect(() => {
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const chat = ai.chats.create({
-        model: 'gemini-2.5-flash',
-        config: {
-          systemInstruction: generateSystemInstruction(),
-        },
-      });
-      setChatSession(chat);
-    } catch (error) {
-      console.error("Error initializing AI:", error);
-    }
+    const initAI = async () => {
+        try {
+            if (!process.env.API_KEY) {
+                console.warn("API Key is missing. Make sure to set process.env.API_KEY in your hosting environment.");
+                setConnectionError("مفتاح الربط (API Key) غير متوفر. يرجى التحقق من إعدادات الاستضافة.");
+                return;
+            }
+
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const chat = ai.chats.create({
+                model: 'gemini-2.5-flash',
+                config: {
+                systemInstruction: generateSystemInstruction(),
+                },
+            });
+            setChatSession(chat);
+            setConnectionError(null);
+        } catch (error) {
+            console.error("Error initializing AI:", error);
+            setConnectionError("فشل تهيئة الاتصال بالخادم.");
+        }
+    };
+    initAI();
   }, []);
 
   // Auto-scroll to bottom
@@ -84,13 +97,32 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Focus input on open
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      inputRef.current?.focus();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, []);
+
   const handleSend = async () => {
-    if (!input.trim() || !chatSession) return;
+    if (!input.trim()) return;
 
     const userMessage = input;
     setInput('');
     setMessages(prev => [...prev, { role: 'user', text: userMessage }]);
     setLoading(true);
+
+    if (!chatSession) {
+        // بدلاً من التوقف بصمت، نعرض رسالة خطأ للمستخدم
+        const errorMessage = connectionError 
+            ? `عذراً، هناك مشكلة في الاتصال: ${connectionError}`
+            : "جاري تهيئة النظام... يرجى الانتظار والمحاولة مرة أخرى.";
+            
+        setMessages(prev => [...prev, { role: 'model', text: errorMessage }]);
+        setLoading(false);
+        return;
+    }
 
     try {
       const result: GenerateContentResponse = await chatSession.sendMessage({ message: userMessage });
@@ -99,7 +131,7 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
       setMessages(prev => [...prev, { role: 'model', text: responseText || "عذراً، لم أستطع معالجة طلبك." }]);
     } catch (error) {
       console.error("Chat Error:", error);
-      setMessages(prev => [...prev, { role: 'model', text: "حدث خطأ في الاتصال، يرجى المحاولة لاحقاً." }]);
+      setMessages(prev => [...prev, { role: 'model', text: "حدث خطأ أثناء الاتصال بالخادم، يرجى المحاولة لاحقاً." }]);
     } finally {
       setLoading(false);
     }
@@ -114,16 +146,19 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
 
   const clearChat = () => {
     setMessages([{ role: 'model', text: 'تم بدء محادثة جديدة. كيف يمكنني مساعدتك بخصوص الموقع؟' }]);
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const chat = ai.chats.create({
-          model: 'gemini-2.5-flash',
-          config: {
-            systemInstruction: generateSystemInstruction(),
-          },
-        });
-        setChatSession(chat);
-    } catch(e) { console.error(e) }
+    
+    // محاولة إعادة التهيئة عند المسح في حال كان هناك خطأ سابق
+    if (process.env.API_KEY && !chatSession) {
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const chat = ai.chats.create({
+                model: 'gemini-2.5-flash',
+                config: { systemInstruction: generateSystemInstruction() },
+            });
+            setChatSession(chat);
+            setConnectionError(null);
+        } catch(e) { console.error(e); }
+    }
   };
 
   return (
@@ -144,8 +179,8 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
             <div>
               <h2 className="font-bold text-white text-lg tracking-wide">Abrazeq GPT</h2>
               <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                <span className="text-xs text-gray-400">متصل (مساعد الموقع)</span>
+                <span className={`w-2 h-2 rounded-full animate-pulse ${connectionError ? 'bg-red-500' : 'bg-green-500'}`} />
+                <span className="text-xs text-gray-400">{connectionError ? 'غير متصل' : 'متصل (مساعد الموقع)'}</span>
               </div>
             </div>
           </div>
@@ -215,6 +250,7 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
         <div className="p-4 bg-zinc-900/50 border-t border-purple-900/50">
           <div className="relative flex items-center max-w-4xl mx-auto">
             <input
+              ref={inputRef}
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -224,6 +260,7 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
               className="w-full bg-black/50 border border-zinc-700 text-white rounded-xl py-4 pr-4 pl-14 focus:outline-none focus:border-purple-500 transition-colors placeholder:text-zinc-600"
             />
             <button
+              type="button"
               onClick={handleSend}
               disabled={loading || !input.trim()}
               className="absolute left-2 p-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
@@ -231,8 +268,13 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
               {loading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
             </button>
           </div>
-          <div className="text-center mt-2">
+          <div className="text-center mt-2 flex items-center justify-center gap-2">
             <p className="text-[10px] text-zinc-600">يعمل بواسطة Gemini 2.5 Flash API</p>
+            {connectionError && (
+              <span title={connectionError} className="cursor-help">
+                <AlertCircle size={10} className="text-red-500" />
+              </span>
+            )}
           </div>
         </div>
 
