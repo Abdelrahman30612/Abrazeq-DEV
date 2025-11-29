@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Send, Bot, User, Loader2, Sparkles, Trash2, AlertCircle } from 'lucide-react';
+import { X, Send, Bot, User, Loader2, Sparkles, Trash2, AlertCircle, Settings } from 'lucide-react';
 import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
 import { ABOUT_ME, PROJECTS, SKILLS } from '../constants';
 
@@ -21,6 +21,7 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
   const [loading, setLoading] = useState(false);
   const [chatSession, setChatSession] = useState<Chat | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [isConfigError, setIsConfigError] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -69,13 +70,26 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
   useEffect(() => {
     const initAI = async () => {
         try {
-            if (!process.env.API_KEY) {
-                console.warn("API Key is missing. Make sure to set process.env.API_KEY in your hosting environment.");
-                setConnectionError("مفتاح الربط (API Key) غير متوفر. يرجى التحقق من إعدادات الاستضافة.");
+            // استخدام المفتاح المقدم
+            let apiKey = "AIzaSyDdXCnAA0CEXMbP9Jw00GRjludpwxep_7k";
+            
+            // محاولة التحقق مما إذا كان هناك مفتاح في process.env (يأخذ الأولوية إذا وجد)
+            try {
+                if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+                    apiKey = process.env.API_KEY;
+                }
+            } catch (e) {
+                console.warn("Environment variable access issue", e);
+            }
+
+            if (!apiKey) {
+                setIsConfigError(true);
+                setConnectionError("مفتاح API مفقود");
                 return;
             }
 
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const ai = new GoogleGenAI({ apiKey: apiKey });
+            
             const chat = ai.chats.create({
                 model: 'gemini-2.5-flash',
                 config: {
@@ -84,9 +98,10 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
             });
             setChatSession(chat);
             setConnectionError(null);
+            setIsConfigError(false);
         } catch (error) {
             console.error("Error initializing AI:", error);
-            setConnectionError("فشل تهيئة الاتصال بالخادم.");
+            setConnectionError("تعذر الاتصال بخدمة الذكاء الاصطناعي.");
         }
     };
     initAI();
@@ -113,13 +128,29 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
     setMessages(prev => [...prev, { role: 'user', text: userMessage }]);
     setLoading(true);
 
+    if (isConfigError) {
+         setMessages(prev => [...prev, { role: 'model', text: "عذراً، لم يتم إعداد مفتاح API في الموقع. يرجى إضافة المتغير API_KEY في إعدادات الاستضافة." }]);
+         setLoading(false);
+         return;
+    }
+
     if (!chatSession) {
-        // بدلاً من التوقف بصمت، نعرض رسالة خطأ للمستخدم
-        const errorMessage = connectionError 
-            ? `عذراً، هناك مشكلة في الاتصال: ${connectionError}`
-            : "جاري تهيئة النظام... يرجى الانتظار والمحاولة مرة أخرى.";
+        // محاولة إعادة التهيئة السريعة إذا كانت الجلسة مفقودة لسبب ما
+        try {
+            const apiKey = "AIzaSyDdXCnAA0CEXMbP9Jw00GRjludpwxep_7k";
+            const ai = new GoogleGenAI({ apiKey });
+            const chat = ai.chats.create({
+                model: 'gemini-2.5-flash',
+                config: { systemInstruction: generateSystemInstruction() },
+            });
+            setChatSession(chat);
             
-        setMessages(prev => [...prev, { role: 'model', text: errorMessage }]);
+            const result: GenerateContentResponse = await chat.sendMessage({ message: userMessage });
+            setMessages(prev => [...prev, { role: 'model', text: result.text || "عذراً، لم أستطع معالجة طلبك." }]);
+        } catch (err) {
+            console.error("Recovery failed:", err);
+            setMessages(prev => [...prev, { role: 'model', text: "جاري تهيئة النظام أو حدث خطأ في الاتصال. يرجى المحاولة بعد قليل." }]);
+        }
         setLoading(false);
         return;
     }
@@ -131,7 +162,7 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
       setMessages(prev => [...prev, { role: 'model', text: responseText || "عذراً، لم أستطع معالجة طلبك." }]);
     } catch (error) {
       console.error("Chat Error:", error);
-      setMessages(prev => [...prev, { role: 'model', text: "حدث خطأ أثناء الاتصال بالخادم، يرجى المحاولة لاحقاً." }]);
+      setMessages(prev => [...prev, { role: 'model', text: "حدث خطأ أثناء الاتصال. يرجى التحقق من الشبكة." }]);
     } finally {
       setLoading(false);
     }
@@ -147,18 +178,22 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
   const clearChat = () => {
     setMessages([{ role: 'model', text: 'تم بدء محادثة جديدة. كيف يمكنني مساعدتك بخصوص الموقع؟' }]);
     
-    // محاولة إعادة التهيئة عند المسح في حال كان هناك خطأ سابق
-    if (process.env.API_KEY && !chatSession) {
-        try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    // Re-initialize chat session
+    try {
+        let apiKey = "AIzaSyDdXCnAA0CEXMbP9Jw00GRjludpwxep_7k";
+        if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+            apiKey = process.env.API_KEY;
+        }
+        
+        if (apiKey) {
+            const ai = new GoogleGenAI({ apiKey });
             const chat = ai.chats.create({
                 model: 'gemini-2.5-flash',
                 config: { systemInstruction: generateSystemInstruction() },
             });
             setChatSession(chat);
-            setConnectionError(null);
-        } catch(e) { console.error(e); }
-    }
+        }
+    } catch(e) { console.error(e); }
   };
 
   return (
@@ -203,7 +238,29 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
         </div>
 
         {/* Chat Area */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar relative">
+          
+          {/* Config Error Overlay */}
+          {isConfigError && (
+              <div className="absolute inset-0 z-20 bg-black/80 flex items-center justify-center p-6">
+                  <div className="bg-zinc-900 border border-red-500/50 rounded-xl p-6 max-w-md text-center shadow-2xl">
+                      <Settings className="w-12 h-12 text-red-500 mx-auto mb-4" />
+                      <h3 className="text-xl font-bold text-white mb-2">مطلوب إعدادات إضافية</h3>
+                      <p className="text-gray-300 mb-4 text-sm leading-relaxed">
+                          لم يتم العثور على مفتاح <code>API_KEY</code>.
+                      </p>
+                      <a 
+                        href="https://aistudio.google.com/app/apikey" 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="inline-block bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-2 rounded-lg text-sm border border-zinc-700 transition-colors"
+                      >
+                          الحصول على مفتاح من Google
+                      </a>
+                  </div>
+              </div>
+          )}
+
           {messages.map((msg, idx) => (
             <motion.div
               key={idx}
@@ -255,14 +312,14 @@ const AbrazeqGPT: React.FC<AbrazeqGPTProps> = ({ onClose }) => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="اسألني عن المهارات، المشاريع، أو التواصل..."
-              disabled={loading}
-              className="w-full bg-black/50 border border-zinc-700 text-white rounded-xl py-4 pr-4 pl-14 focus:outline-none focus:border-purple-500 transition-colors placeholder:text-zinc-600"
+              placeholder={isConfigError ? "الشات غير متصل..." : "اسألني عن المهارات، المشاريع، أو التواصل..."}
+              disabled={loading || isConfigError}
+              className="w-full bg-black/50 border border-zinc-700 text-white rounded-xl py-4 pr-4 pl-14 focus:outline-none focus:border-purple-500 transition-colors placeholder:text-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <button
               type="button"
               onClick={handleSend}
-              disabled={loading || !input.trim()}
+              disabled={loading || !input.trim() || isConfigError}
               className="absolute left-2 p-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
